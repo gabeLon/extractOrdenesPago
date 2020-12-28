@@ -1,67 +1,83 @@
-//Inspirado en https://yagisanatode.com/2020/06/13/google-apps-script-extract-specific-data-from-a-pdf-and-insert-it-into-a-google-sheet/
-// y en https://gist.github.com/sparkalow/8113e8b7e5c518569c19684ed1d786fb
+/**
+ * Adapted from:
+ * https://yagisanatode.com/2020/06/13/google-apps-script-extract-specific-data-from-a-pdf-and-insert-it-into-a-google-sheet/
+ * https://gist.github.com/sparkalow/8113e8b7e5c518569c19684ed1d786fb
+ */
+ 
 
+// Globals
 var ss = SpreadsheetApp.getActiveSpreadsheet()
+var mainFolderId = Browser.inputBox("Ingrese el Id de la carpeta que contiene los archivos")
+var sheetCancelaciones = ss.getSheetByName(Browser.inputBox("Ingrese el nombre de la hoja donde desee agregar los datos de las cancelaciones"))
+var sheetDebitos = ss.getSheetByName(Browser.inputBox("Ingrese el nombre de la hoja donde desee agregar los datos de los debitos"))
+// Stores all data as bidimentional arrays.
 var allDataCancelaciones = []
 var allDataDebitos = []
 
+
+/**
+ * Main function.
+ */
 function extractData(){
-  const folderId = Browser.inputBox("Ingrese el Id de la carpeta que contiene los archivos")
-  var folder = DriveApp.getFolderById(folderId).getFolders()  
-  var sheetCancelaciones = ss.getSheetByName(Browser.inputBox("Ingrese el nombre de la hoja donde desee agregar los datos de las cancelaciones"))
-  var sheetDebitos = ss.getSheetByName(Browser.inputBox("Ingrese el nombre de la hoja donde desee agregar los datos de los debitos"))
+
+  // Process files on main folder.
+  processFiles(mainFolderId)
+
+  var folders = DriveApp.getFolderById(mainFolderId).getFolders()
   
-  Logger.log(folder)
-  Logger.log(folder.hasNext())
+  // In case main folder has sub folders, process them as well.
+  if (folders.hasNext()) {
+    processFolders(folders)
+  } 
   
-  if (folder.hasNext()) {
-    processFolder(folder);
-  } else {
-    Browser.msgBox('Folder not found!');
-    var files = DriveApp.getFolderById(folderId).getFilesByType("application/pdf")
-    Logger.log(files)
-    
-    while(files.hasNext()){
-      var file = files.next()
-      var fileId = file.getId()
-      Logger.log(fileId)
-      var doc = getTextFromPDF(fileId)
-      var data = extractFields(doc.text, doc.name)
-      
-      allDataCancelaciones = allDataCancelaciones.concat(data.cancelaciones)
-      allDataDebitos = allDataDebitos.concat(data.debitos)
-    }
-    
-    importToSpreadsheet(allDataCancelaciones, sheetCancelaciones)
-    importToSpreadsheet(allDataDebitos, sheetDebitos)
-    
-  }
+  // Once all data is concattenated on allData... variables, imports it to sheets.
+  importToSpreadsheet(allDataCancelaciones, sheetCancelaciones)
+  importToSpreadsheet(allDataDebitos, sheetDebitos)
   
 }
 
-function processFolder(folder) {
-  while (folder.hasNext()) {
-    var f = folder.next();
-    
-    var files = f.getFilesByType("application/pdf")
-    Logger.log(files)
-    
-    while(files.hasNext()){
-      var file = files.next()
-      var fileId = file.getId()
-      Logger.log(fileId)
-      var doc = getTextFromPDF(fileId)
-      var data = extractFields(doc.text, doc.name)
-      
-      allDataCancelaciones = allDataCancelaciones.concat(data.cancelaciones)
-      allDataDebitos = allDataDebitos.concat(data.debitos)
-    }
-    var subFolder = f.getFolders();
-    processFolder(subFolder);
+
+/**
+ * Process files on folders and subfolders.
+ * @param {FolderIterator}
+ */
+function processFolders(folders) {
+  while (folders.hasNext()) {
+    var folder = folders.next()
+    var folderId = folder.getId()
+    processFiles(folderId)
+
+    // If folder contains subfolders, process them as well
+    var subFolder = folder.getFolders()
+    processFolders(subFolder)
   }
 }
 
+/**
+ * Process files on subfolders.
+ * @param {string} folderId
+ */
+function processFiles(folderId){
+  var files = DriveApp.getFolderById(folderId).getFilesByType("application/pdf")  
+  
+  while(files.hasNext()){
+    var file = files.next()
+    var fileId = file.getId()
+    // Uses custom functions to extract data.
+    var doc = getTextFromPDF(fileId)
+    var data = extractFields(doc.text, doc.name)
+    
+    // Stores extracted data on array.
+    allDataCancelaciones = allDataCancelaciones.concat(data.cancelaciones)
+    allDataDebitos = allDataDebitos.concat(data.debitos)
+  }
+}
 
+/**
+ * Extract text from pdf.
+ * @param {string} fileId
+ * @return {object}
+ */
 function getTextFromPDF(fileId) {
   var blob = DriveApp.getFileById(fileId).getBlob()
   var resource = {
@@ -80,7 +96,7 @@ function getTextFromPDF(fileId) {
   var text = doc.getBody().getText()
   var fileName = doc.getName()
   
-  // Deleted the document once the text has been stored.
+  // Deletes the document once the text has been stored.
   Drive.Files.remove(doc.getId())
   
   return {
@@ -89,24 +105,32 @@ function getTextFromPDF(fileId) {
   }
 }
 
+/**
+ * Extact specific fields by matching regular expressions.
+ * @param {string} text
+ * @param {string} fileName
+ * @return bidimentional arrays as object
+ */
 function extractFields(text, fileName){
+  // creates Regex formulas.
   var regexOrdenPago = /(?<=Orden de.+[\r\n])([0-9]{1,})/
   var regexFechaEmision = /(?<=FPD )([\d]{2}\/[\d]{2}\/[\d]{4})/
   var regexCodigoMedico = /(?<=Codigo de medico:.+?)([\d]{1,})/
   var regexBeneficiario = /(?<=Beneficiario:\s+)(.+\b)/
   var regexCancelaciones = /(?<!D e b i t o s.+[\r\n].+)([\d ]{4,})\s*([^0-9\/]+)\s*(\d{2},\d{2})?\s*(\d{1,2}\/\d{4})\s* (\d{1,}\.*\d{1,3},\d{2})/g
-  var regexDebitos = /(?<!C a n c e l a c i o n.+[\r\n].+)([\d]{4,})\s*([^0-9]+)\s*(\d{1,2}\/\d{4})\s* (\d{1,}\.*\d{1,3},\d{2})/g
-  //var ordenPago = text.match(regexOrdenPago)
+  var regexDebitos = /(?<!C a n c e l a c i o n.+[\r\n].+)([\d]{4,})?\s*([^0-9]+|Retencion de ingresos brutos prov Bs As [0-9]{8})\s*(\d{1,2}\/\d{4})?\s*((?:\d{1,}\.*)?\d{1,3},\d{2})(?=.*Total debito)/g
+  // extract desired fields from text using Regex formulas
   var ordenPago = regexOrdenPago.exec(text)
-  //var fechaEmision = text.match(regexFechaEmision)
   var fechaEmision = regexFechaEmision.exec(text)
-  //var codigoMedico = text.match(regexCodigoMedico)
   var codigoMedico = regexCodigoMedico.exec(text)
-  //var beneficiario = text.match(regexBeneficiario)
   var beneficiario = regexBeneficiario.exec(text)
+  // multiple match fields need to be converted to objects and then to arrays
   var cancelacionesToObject = text.matchAll(regexCancelaciones)
   var cancelacionesToArray = Array.from(cancelacionesToObject)
+  var debitosToObject = text.matchAll(regexDebitos)
+  var debitosToArray = Array.from(debitosToObject)
   
+  // Concatenates elements into a new array
   try {
     var cancelaciones = cancelacionesToArray.map(function(array){
       return [fileName, ordenPago, fechaEmision, codigoMedico, beneficiario,
@@ -115,9 +139,6 @@ function extractFields(text, fileName){
     }catch(e){
       var cancelaciones = [["Error"]] 
       }
-  
-  var debitosToObject = text.matchAll(regexDebitos)
-  var debitosToArray = Array.from(debitosToObject)
   
   try {
     var debitos = debitosToArray.map(function(array){
@@ -134,8 +155,14 @@ function extractFields(text, fileName){
   }
 }
 
+/**
+ * Move data to Google SpreadSheet.
+ * @param {bidimentional array} data
+ * @param {string} sheetName
+ */
 function importToSpreadsheet(data, sheetName){
-  const sheet = ss.getSheetByName(sheetName)
+  const sheet = sheetName
+  // Paste data under last non empty row
   const range = sheet.getRange(sheet.getLastRow()+1,1,data.length, data[0].length)
   range.setValues(data)
 }
